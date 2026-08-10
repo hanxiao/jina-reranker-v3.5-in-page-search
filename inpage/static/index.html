@@ -97,11 +97,6 @@
   @keyframes pulse { 50% { opacity: 0.35; } }
   .note { font-size: 10px; color: var(--muted); line-height: 1.5; }
 
-  .prefetch { font-size: 10px; color: #94a3b8; margin-top: -4px; min-height: 14px; }
-  .prefetch.ready { color: #15803d; }
-  .prefetch.failed { color: #b3261e; }
-  .prefetch.working::after { content: ""; animation: dots 1.2s steps(4, end) infinite; }
-  @keyframes dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
   a { color: inherit; }
 
   /* ---------- right: rendered page ---------- */
@@ -145,7 +140,6 @@
         <input id="url" type="url" required
                value="https://jina.ai/news/jina-reranker-v3-5-faster-listwise-reranking-hybrid-attention-self-distillation/">
       </label>
-      <div class="prefetch" id="prefetch">&nbsp;</div>
       <label class="row">question
         <textarea id="question" required
                   placeholder="ask in plain language, no keywords needed">how did they make it run faster without making the model bigger</textarea>
@@ -221,15 +215,12 @@
     const url = $('url').value.trim();
     clearTimeout(prefetchTimer);
     if (!url || url === prefetched || !/^https?:\/\/\S+\.\S+/.test(url)) return;
-    $('prefetch').className = 'prefetch';
-    $('prefetch').innerHTML = '&nbsp;';
     prefetchTimer = setTimeout(() => runPrefetch(url), PREFETCH_DELAY_MS);
   }
 
+  // Silent on purpose. Any problem here resurfaces when search runs, which
+  // reports it properly, so there is nothing worth saying mid-typing.
   async function runPrefetch(url) {
-    const el = $('prefetch');
-    el.className = 'prefetch working';
-    el.textContent = 'prefetching page';
     try {
       const response = await fetch('/api/prefetch', {
         method: 'POST',
@@ -237,20 +228,9 @@
         body: JSON.stringify({ url }),
       });
       const data = await response.json();
-      if (url !== $('url').value.trim()) return;  // superseded while in flight
-      if (data.cached) {
-        prefetched = url;
-        el.className = 'prefetch ready';
-        el.textContent = 'page ready \u00b7 ' + data.note;
-      } else {
-        // Say why rather than going quiet: a 404 here is worth seeing before
-        // you have typed out a whole question.
-        el.className = 'prefetch failed';
-        el.textContent = data.note || 'could not fetch this page';
-      }
+      if (data.cached && url === $('url').value.trim()) prefetched = url;
     } catch {
-      el.className = 'prefetch';
-      el.innerHTML = '&nbsp;';
+      /* the search will fetch it again and report any failure */
     }
   }
 

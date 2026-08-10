@@ -28,9 +28,10 @@ model load is visible rather than looking like a hang:
 ![Progress while searching](docs/img/ui-progress.png)
 
 The page is fetched **while you are still typing the question**. Settle on a
-url and the server pulls it and warms the weights in the background, so hitting
-search usually costs only the forward pass. On a 905-sentence page that is
-1.35s down to 1.09s; the fetch has left the critical path entirely.
+url and the server quietly pulls it and warms the weights in the background,
+with nothing to click and nothing to read, so hitting search usually costs only
+the forward pass. On a 345-sentence page that is 1.35s down to 1.09s while the
+ranking itself is unchanged — the fetch has left the critical path entirely.
 
 It works on whatever the page happens to be. Dark-themed docs keep their theme,
 nav and table layout, and the highlight lands in the right cell:
@@ -187,7 +188,9 @@ The backend is a stdlib `http.server` — no web framework.
   which stage it is in instead of showing a spinner that means nothing.
 - `POST /api/prefetch` is fired when the url field settles, ~700 ms after the
   last keystroke. It caches the page and loads the weights in a background
-  thread, so both are usually done before the question is finished.
+  thread, so both are usually done before the question is finished. It reports
+  nothing to the UI: anything that goes wrong resurfaces when search runs,
+  which reports it properly.
 
 The model loads once and is reused, and the last page fetched is cached, so
 changing granularity or top-n re-ranks without re-fetching.
