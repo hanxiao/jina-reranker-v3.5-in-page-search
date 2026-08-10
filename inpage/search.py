@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
+from .backends import DEFAULT_MODEL_REPO, ApiReranker, LocalReranker, Reranker
 from .highlight import Chunk, Span, apply_highlights, build_chunks, inject_assets, merge_spans
 from .segment import Sentence, segment_html
 
-DEFAULT_MODEL_REPO = "jinaai/jina-reranker-v3.5-mlx"
+__all__ = [
+    "DEFAULT_MODEL_REPO",
+    "Hit",
+    "InPageSearcher",
+    "SearchResult",
+    "strip_api_flag",
+]
+
+#: Appending this to a url switches that search to the hosted reranker.
+API_FLAG = "api=true"
 
 
 @dataclass
@@ -33,35 +41,40 @@ class SearchResult:
     sentence_count: int = 0
     chunk_count: int = 0
     elapsed_ms: int = 0
+    backend: str = ""
 
 
-def _load_reranker_module(model_dir: Path):
-    """Import the checkpoint's own rerank.py.
+def strip_api_flag(url: str) -> tuple[str, bool]:
+    """Split ``api=true`` off a url, returning the clean url and the flag.
 
-    The MLX checkpoint ships its modelling and scoring code alongside the
-    weights, so we load that rather than reimplementing the LBNL readout.
+    The flag is a property of the request, not of the page, so it has to come
+    off before fetching or the query string would change what is fetched.
     """
-    module_path = model_dir / "rerank.py"
-    if not module_path.exists():
-        raise FileNotFoundError(
-            f"{module_path} not found. Download the checkpoint first:\n"
-            f"  hf download {DEFAULT_MODEL_REPO} --local-dir {model_dir}"
-        )
-    # The checkpoint's rerank.py imports its sibling modeling.py by name.
-    sys.path.insert(0, str(model_dir))
-    spec = importlib.util.spec_from_file_location("jina_rerank_v35", module_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+    parts = urlsplit(url)
+    pairs = parse_qsl(parts.query, keep_blank_values=True)
+    use_api = any(k == "api" and v.lower() == "true" for k, v in pairs)
+    if not use_api:
+        return url, False
+    kept = [(k, v) for k, v in pairs if k != "api"]
+    return urlunsplit(parts._replace(query=urlencode(kept))), True
 
 
 class InPageSearcher:
     """Rank every passage of one page against a question, in a single call."""
 
-    def __init__(self, model_dir: str | Path):
-        model_dir = Path(model_dir).expanduser().resolve()
-        module = _load_reranker_module(model_dir)
-        self.reranker = module.MLXReranker(model_path=str(model_dir))
+    def __init__(self, model_dir: str | Path | None = None, reranker: Reranker | None = None):
+        if reranker is None:
+            if model_dir is None:
+                raise ValueError("pass either model_dir or reranker")
+            reranker = LocalReranker(model_dir)
+        self.reranker = reranker
+
+    @classmethod
+    def hosted(cls, api_key: str | None = None) -> "InPageSearcher":
+        """A searcher backed by api.jina.ai instead of the local weights."""
+        return cls(reranker=ApiReranker(api_key))
 
     def search(
         self,
@@ -88,7 +101,7 @@ class InPageSearcher:
         started = time.perf_counter()
         # The whole document goes in as one candidate list: this is the single
         # listwise call the demo is about.
-        ranked = self.reranker.rerank(question, [c.text for c in chunks], top_n=top_n)
+        ranked = self.reranker.rerank(question, [c.text for c in chunks], top_n)
         elapsed_ms = int((time.perf_counter() - started) * 1000)
 
         spans, hits = self._to_spans(ranked, chunks, sentences)
@@ -101,6 +114,7 @@ class InPageSearcher:
             sentence_count=len(sentences),
             chunk_count=len(chunks),
             elapsed_ms=elapsed_ms,
+            backend=getattr(self.reranker, "name", ""),
         )
 
     @staticmethod

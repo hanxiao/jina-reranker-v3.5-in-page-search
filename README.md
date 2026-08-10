@@ -195,6 +195,31 @@ The backend is a stdlib `http.server` — no web framework.
 The model loads once and is reused, and the last page fetched is cached, so
 changing granularity or top-n re-ranks without re-fetching.
 
+#### Running against the hosted API instead
+
+Append `?api=true` to the url and that search is ranked by
+[api.jina.ai](https://jina.ai/reranker/) rather than the local weights:
+
+```
+https://docs.sglang.io/docs/advanced_features/server_arguments?api=true
+```
+
+![Ranked by the hosted API](docs/img/ui-api.png)
+
+This one needs `JINA_API_KEY`. The flag is stripped before the page is
+fetched, the weights are not loaded if they are not going to be used, and the
+`backend` row reports which one actually ran. Same page, same question, same
+top hit:
+
+| backend | ranking |
+|---|---|
+| local, M3 Ultra | 1751 ms, score 0.6299 |
+| api.jina.ai | 383 ms, score 0.6308 |
+
+The hosted model runs on far better hardware than a laptop, so for a page this
+size it is several times quicker even including the network round trip. Local
+stays the default because it needs no key and no network.
+
 ### Command line
 
 ```bash
@@ -242,6 +267,7 @@ open("out.html", "w").write(result.html)
 | `-n, --top-n` | `1` | How many ranked chunks to highlight |
 | `--url` / `--file` | — | Fetch through Reader, or read a local file |
 | `--open` | off | Open the result in a browser |
+| `--api` | off | Rank with api.jina.ai instead of the local weights |
 
 `inpage-serve` takes `--model-dir`, `--host`, `--port` and `--no-open`.
 

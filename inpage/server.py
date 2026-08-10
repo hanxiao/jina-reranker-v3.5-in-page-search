@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 from .reader import fetch_page
-from .search import InPageSearcher
+from .search import InPageSearcher, strip_api_flag
 
 STATIC_DIR = Path(__file__).parent / "static"
 MAX_BODY_BYTES = 1 << 20
@@ -32,6 +32,7 @@ class _State:
     def __init__(self, model_dir: str) -> None:
         self.model_dir = model_dir
         self._searcher: Optional[InPageSearcher] = None
+        self._hosted: Optional[InPageSearcher] = None
         self._lock = threading.Lock()
         # Guards the page cache so a prefetch and a search racing on the same
         # url fetch it once rather than twice.
@@ -78,6 +79,14 @@ class _State:
                 self._warming = False
 
         threading.Thread(target=run, daemon=True).start()
+
+    @property
+    def hosted(self) -> InPageSearcher:
+        """The api.jina.ai backend. Built on first use, so a missing key only
+        matters for someone who actually asks for it."""
+        if self._hosted is None:
+            self._hosted = InPageSearcher.hosted()
+        return self._hosted
 
     @property
     def model_loaded(self) -> bool:
@@ -144,19 +153,28 @@ class _Handler(BaseHTTPRequestHandler):
             self.wfile.flush()
 
         try:
-            url = (payload.get("url") or "").strip()
+            raw_url = (payload.get("url") or "").strip()
             question = (payload.get("question") or "").strip()
-            if not url or not question:
+            if not raw_url or not question:
                 raise ValueError("url and question are both required")
+
+            # ?api=true runs the hosted reranker instead of the local weights.
+            # The flag is stripped before fetching, since it belongs to the
+            # request rather than to the page.
+            url, use_api = strip_api_flag(raw_url)
 
             emit("stage", step="fetch", message="fetching page")
             html, note = self.state.html_for(url)
             emit("stage", step="fetched", message=note, bytes=len(html))
 
             # Notes only carry what the step label does not already say.
-            if not self.state.model_loaded:
-                emit("stage", step="model", message="first run, ~1.1 GB")
-            searcher = self.state.searcher
+            if use_api:
+                emit("stage", step="model", message="api.jina.ai")
+                searcher = self.state.hosted
+            else:
+                if not self.state.model_loaded:
+                    emit("stage", step="model", message="first run, ~1.1 GB")
+                searcher = self.state.searcher
 
             emit("stage", step="rank")
             with self.state._lock:  # one forward pass at a time
@@ -174,6 +192,7 @@ class _Handler(BaseHTTPRequestHandler):
                 sentences=result.sentence_count,
                 chunks=result.chunk_count,
                 elapsed_ms=result.elapsed_ms,
+                backend=result.backend,
                 source=note,
                 hits=[
                     {"rank": h.rank, "score": round(h.score, 4), "text": h.text}
@@ -192,12 +211,14 @@ class _Handler(BaseHTTPRequestHandler):
         Called as soon as the url field settles, so by the time someone has
         written a question the slow parts are usually already done.
         """
-        url = (payload.get("url") or "").strip()
+        url, use_api = strip_api_flag((payload.get("url") or "").strip())
         if not url:
             self._send_json(400, {"error": "url required"})
             return
 
-        self.state.warm_model()
+        # No point loading 1.1 GB of weights for a search that will not use them.
+        if not use_api:
+            self.state.warm_model()
         if self.state.is_cached(url):
             self._send_json(200, {"cached": True, "note": "page ready"})
             return

@@ -179,6 +179,7 @@
       <div class="stat"><dt>chunks</dt><dd id="s-chunk"></dd></div>
       <div class="stat"><dt>latency</dt><dd id="s-ms"></dd></div>
       <div class="stat"><dt>requests</dt><dd id="s-req"></dd></div>
+      <div class="stat"><dt>backend</dt><dd id="s-backend"></dd></div>
     </dl>
     <div class="steps" id="steps" hidden></div>
     <div class="legendbar" id="legend" hidden></div>
@@ -324,6 +325,7 @@
       setText('s-chunk', data.chunks);
       setText('s-ms', data.elapsed_ms + ' ms');
       setText('s-req', '1');
+      setText('s-backend', data.backend || 'local (mlx)');
       $('barurl').title = data.source || '';
       prefetched = $('url').value.trim();
 

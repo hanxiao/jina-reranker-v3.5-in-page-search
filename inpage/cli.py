@@ -8,7 +8,7 @@ import webbrowser
 from pathlib import Path
 
 from .reader import fetch_html
-from .search import DEFAULT_MODEL_REPO, InPageSearcher
+from .search import DEFAULT_MODEL_REPO, InPageSearcher, strip_api_flag
 
 DEFAULT_MODEL_DIR = "~/models/jina-reranker-v3.5-mlx"
 
@@ -39,30 +39,39 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"local copy of {DEFAULT_MODEL_REPO} (default: {DEFAULT_MODEL_DIR})",
     )
     parser.add_argument("--open", action="store_true", help="open the result in a browser")
+    parser.add_argument(
+        "--api", action="store_true",
+        help="rank with api.jina.ai instead of the local weights (needs JINA_API_KEY)",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
-    if args.url:
-        print(f"Reading {args.url}", file=sys.stderr)
-        html = fetch_html(args.url)
+    use_api = args.api
+    url = args.url
+    if url:
+        # ?api=true works here too, so a url pasted from the UI behaves the same.
+        url, flagged = strip_api_flag(url)
+        use_api = use_api or flagged
+        print(f"Reading {url}", file=sys.stderr)
+        html = fetch_html(url)
     else:
         html = Path(args.file).expanduser().read_text(encoding="utf-8")
 
-    searcher = InPageSearcher(args.model_dir)
+    searcher = InPageSearcher.hosted() if use_api else InPageSearcher(args.model_dir)
     result = searcher.search(
         html,
         args.question,
         granularity=args.granularity,
         top_n=args.top_n,
-        base_url=args.url,
+        base_url=url,
     )
 
     print(
         f"{result.sentence_count} sentences -> {result.chunk_count} chunks, "
-        f"{result.elapsed_ms} ms in a single request",
+        f"{result.elapsed_ms} ms in a single request via {result.backend}",
         file=sys.stderr,
     )
     for hit in result.hits:
