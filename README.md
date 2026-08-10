@@ -1,312 +1,242 @@
 # jina-reranker-v3.5-in-page-search
 
-Ask a web page a question in plain language and the answer is highlighted **in
-the page itself**, with its own CSS, fonts and layout intact. One listwise
-[jina-reranker-v3.5](https://huggingface.co/jinaai/jina-reranker-v3.5) call
-ranks every passage of the document. No embedding index, no vector store, no
-chunk database. Runs locally on Apple Silicon through MLX.
+Ask a page a question, get the answer highlighted in the page itself. One
+listwise [jina-reranker-v3.5](https://huggingface.co/jinaai/jina-reranker-v3.5)
+call ranks the whole document. No index, no vector store, no chunk database.
+Runs locally on Apple Silicon via MLX.
 
 ![In-page QA search UI](docs/img/ui-top1.png)
 
-*104 sentences, 52 chunks, **271 ms**, one request. The question was "how did
-they make it run faster without making the model bigger" — not one content word
-in it appears in the sentence it found.*
+104 sentences, 52 chunks, 271 ms, one request. The question was "how did they
+make it run faster without making the model bigger". No content word in it
+appears in the sentence it found.
 
 ```bash
 inpage-serve --model-dir ~/models/jina-reranker-v3.5-mlx
 ```
 
-Settings on the left, the rendered page on the right. `Highlights: top 3` shades
-the runners-up and lists them with their scores; clicking one scrolls the page
-to it.
+Settings left, rendered page right. Highlights are spliced into the source HTML
+as `<mark>`, so the page keeps its own CSS, fonts, tables and figures.
 
-![Top 3 highlights](docs/img/ui-top3.png)
+## Why listwise
 
-The stages stream back while the search runs, so a slow fetch or the one-off
-model load is visible rather than looking like a hang:
+Normal in-document search: embed every chunk, store vectors, embed query, ANN
+lookup. Every reason for that stack disappears when the corpus is one page.
 
-![Progress while searching](docs/img/ui-progress.png)
+**An index amortizes over many queries. This corpus lives for one page view.**
+Building embeddings and querying them back is more work than one forward pass
+over the same text.
 
-The page is fetched **while you are still typing the question**. Settle on a
-url and the server quietly pulls it and warms the weights in the background,
-with nothing to click and nothing to read, so hitting search usually costs only
-the forward pass. On a 345-sentence page that is 1.35s down to 1.09s while the
-ranking itself is unchanged — the fetch has left the critical path entirely.
+**Bi-encoders score each chunk blind to the others.** A chunk's vector is
+computed before the other chunks exist. But relevance inside a document is
+comparative: three paragraphs mention latency, which one answers the question?
+Listwise packs query + all candidates into one context and runs self-attention
+across them, so each passage is scored against its competitors. ColBERT-style
+late interaction gives this up by design.
 
-It works on whatever the page happens to be. Dark-themed docs keep their theme,
-nav and table layout, and the highlight lands in the right cell:
+**A page fits in one context.** 131K tokens. A 74 KB post is 104 sentences, 52
+chunks, ~3.5K tokens. Whole document in, answer out in 271 ms on an M3 Ultra.
 
-![Prefetched and highlighted](docs/img/ui-prefetch.png)
+**Plain questions beat Ctrl-F**, which needs you to already know the wording.
+
+Counter-argument: quadratic attention over long lists is expensive, which is
+what v3.5's hybrid attention fixes. At a million documents you still want a
+first-stage retriever. At one page, the retriever is what you delete.
+
+## More
+
+Progress streams while it runs, so a slow fetch or the one-off model load is
+visible instead of looking hung:
+
+![Progress](docs/img/ui-progress.png)
+
+Page is fetched while you type the question. Settle on a url, the server pulls
+it and warms the weights in the background. 345-sentence page: 1.35s cold,
+1.09s prefetched, ranking unchanged. Fetch is off the critical path.
+
+Dark-themed docs keep their theme, nav and table layout:
+
+![Prefetched](docs/img/ui-prefetch.png)
 
 Wikipedia keeps its sidebar, infoboxes and rendered math:
 
 ![Wikipedia](docs/img/ui-wikipedia.png)
 
----
+`Highlights: top 3` shades runners-up and lists them with scores. Click one to
+jump to it:
 
-## Why a listwise reranker is the right tool here
-
-The usual way to search inside a document is to embed every chunk, store the
-vectors, embed the query, and take nearest neighbours. That architecture exists
-for a reason — but every one of those reasons disappears when the corpus is
-**one page you are reading right now**.
-
-**1. There is nothing to amortise an index over.** An index is a cost you pay
-once so that many future queries get cheaper. Here the corpus has a lifetime of
-one page view. Building embeddings, writing them somewhere, and querying them
-back is strictly more work than one forward pass over the same text.
-
-**2. Bi-encoders score each chunk blind to the others.** Embedding a chunk
-produces a vector that cannot depend on what else is on the page, because it
-was computed before the other chunks were seen. Relevance inside a document is
-almost always *comparative*: three paragraphs mention latency, and the question
-is which one actually answers the question. A listwise reranker packs the query
-and **every candidate into a single context** and runs self-attention across all
-of them, so each passage is scored while the model can see its competitors. The
-paper calls this in-context cross-document comparison, and it is exactly what
-late-interaction models like ColBERT give up by encoding passages independently.
-
-**3. A page fits in one context.** This is what makes the whole idea practical
-rather than theoretical. v3.5 takes **131K tokens**. A 74 KB blog post is 104
-sentences and 52 chunks — about 3.5K tokens. The entire document goes in as one
-candidate list, and the answer comes back in **271 ms** on an M3 Ultra. Latency
-is one prefill, not a pipeline.
-
-**4. Plain questions beat keyword search here.** Ctrl-F needs you to already
-know the words on the page. Every question in the screenshots above is answered
-correctly with near-zero lexical overlap: *"what do they admit it still cannot
-do well"* lands on the Limitations paragraph, which never uses the word "admit".
-
-The honest trade: quadratic attention over a long candidate list is expensive,
-which is the thing v3.5's hybrid attention was built to fix — see below. If you
-had a million documents you would still want a first-stage retriever in front.
-For one page, the retriever is the part you get to delete.
+![Top 3](docs/img/ui-top3.png)
 
 ## Pipeline
 
 ![Pipeline](docs/img/pipeline.png)
 
-The idea worth stating plainly: **the source HTML is never re-rendered.**
-Sentences are extracted with their byte offsets into the original markup, the
-reranker's output is mapped back through those offsets, and `<mark>` tags are
-spliced in. The page keeps its own stylesheet, tables and figures — in the
-screenshot above the blog's typography and code blocks are its own, not a
-reconstruction.
+The source HTML is never re-rendered. Sentences carry byte offsets into the
+original markup, ranked chunks map back through those offsets, `<mark>` gets
+spliced in.
 
-## How jina-reranker-v3.5 scores a list
+## The model
 
-From the paper, [arXiv:2607.18152](https://arxiv.org/abs/2607.18152):
+From [arXiv:2607.18152](https://arxiv.org/abs/2607.18152):
 
-**Last-but-not-late (LBNL) interaction.** A listwise prompt concatenates all
-passages with delimiter tokens and places the query in a trailing block. Causal
-self-attention over the full sequence produces contextual embeddings at those
-special token positions, a two-layer MLP projects them into a **512-dimensional**
-space, and query and document vectors are compared by **cosine similarity**.
+**LBNL interaction.** All passages concatenated with delimiter tokens, query in
+a trailing block. Causal self-attention over the whole sequence, contextual
+embeddings read at the special token positions, two-layer MLP projects to 512-d,
+cosine similarity scores.
 
-**Hybrid 3L2G attention.** Full attention at all 28 layers dominates compute
-when candidate lists get long. v3.5 repeats **three sliding-window layers
-followed by two global layers**, giving 17 local and 11 global layers with a
-window of **w = 1024** tokens, dropping attention cost from `O(L²)` to `O(L·w)`
-on the local layers.
+**Hybrid 3L2G.** Three sliding-window layers then two global, repeating. 17
+local and 11 global across 28 layers, window w=1024. Drops attention from
+`O(L²)` to `O(L·w)` on the local layers.
 
-**The pinned terminal global layer.** This is the constraint that makes the
-architecture interesting. The query embedding token sits at the *end* of the
-sequence and has to attend back to the *first* candidate to be
-cross-document-aware — and a finite window severs exactly that dependency. So
-the final layer stays global no matter what (`G*` in the paper). Replacing it
-with a sliding window severely degraded ranking. This readout constraint does
-not exist in generative language modelling, and it is what separates this
-backbone from prior local-global systems like Gemma 3.
+**Pinned terminal global layer.** The interesting constraint. The query token
+sits at the end of the sequence and must attend back to the first candidate to
+be cross-document-aware. A finite window severs exactly that. So the last layer
+stays global always (`G*`). Swapping it for a sliding window wrecked ranking.
+No such constraint exists in generative LMs, which is what separates this from
+Gemma 3's local-global schedule.
 
-**Self-distillation across an attention mismatch.** Teacher and student are the
-same size (0.6B) and differ *only* in attention pattern. A full-attention
-teacher sets the upper bound; the student then activates 3L2G, first retraining
-only the attention projections to learn routing under the sparse mask, then
-matching the teacher's representations. Adapting the geometry *before* matching
-behaviour is what recovers the gap.
+**Self-distillation across an attention mismatch.** Teacher and student are both
+0.6B, differing only in attention pattern. Full-attention teacher sets the
+ceiling; student activates 3L2G, retrains attention projections alone to learn
+routing under the sparse mask, then matches teacher representations. Adapt the
+geometry before matching behaviour.
 
-### Reported results
-
-| Benchmark | v3 | **v3.5** | Note |
+| Benchmark | v3 | v3.5 | |
 |---|---|---|---|
-| BEIR (nDCG@10) | 62.10 | **63.20** | above Qwen3-Reranker-4B at 62.28, ~7× fewer params |
-| MIRACL | 72.20 | **74.11** | best among 0.6B models |
-| RTEB | 68.01 | **70.95** | +14.0 on AILA-Statute, +11.7 on AILA-Case |
-| Struct-IR (controlled pool) | 38.7 | **48.3** | +9.6, the largest gain |
+| BEIR nDCG@10 | 62.10 | **63.20** | beats Qwen3-Reranker-4B at 62.28, ~7x fewer params |
+| MIRACL | 72.20 | **74.11** | best at 0.6B |
+| RTEB | 68.01 | **70.95** | +14.0 AILA-Statute, +11.7 AILA-Case |
+| Struct-IR | 38.7 | **48.3** | +9.6, biggest gain |
 
-Latency, A100, batch size 1, top-100 listwise, FlashAttention-2: BEIR NQ
-371 ms → 305 ms (**1.22×**); RTEB AILACasedocs 16.1 s → 10.3 s (**1.56×**).
-The hybrid schedule pays off most when passages are long, which is the regime a
-whole web page lands in.
-
-## Getting the page
-
-Two sources, tried in order:
-
-1. **[Jina Reader](https://jina.ai/reader/)** (`r.jina.ai`) renders client-side
-   pages and returns clean markup. Anonymous use is rate limited, and some
-   networks are refused outright — the error is explicit about it: *"blocked
-   from performing anonymous queries due to bad network reputation"*.
-2. **A plain HTTP GET**, which needs no key and no account.
-
-So a key is optional. Set `JINA_API_KEY` if you have one and you get Reader's
-rendering on JavaScript-heavy pages; without it the tool falls back to fetching
-the page directly and says so in the progress list. For ordinary
-server-rendered documentation and articles the direct fetch is perfectly good
-input — every screenshot on this page was produced without a key.
+A100, bs=1, top-100 listwise, FlashAttention-2: BEIR NQ 371ms to 305ms (1.22x),
+RTEB AILACasedocs 16.1s to 10.3s (1.56x). Pays off most on long passages, which
+is where a full web page lands.
 
 ## Install
 
-Apple Silicon required (MLX).
+Apple Silicon required.
 
 ```bash
 git clone https://github.com/hanxiao/jina-reranker-v3.5-in-page-search
 cd jina-reranker-v3.5-in-page-search
 uv venv && source .venv/bin/activate
 uv pip install -e .
-```
-
-Then fetch the checkpoint (~1.1 GB):
-
-```bash
 hf download jinaai/jina-reranker-v3.5-mlx --local-dir ~/models/jina-reranker-v3.5-mlx
 ```
 
 ## Use
 
-### Web UI
-
 ```bash
 inpage-serve --model-dir ~/models/jina-reranker-v3.5-mlx
 ```
 
-Opens on <http://127.0.0.1:8000>. No API key, no account, no configuration.
+<http://127.0.0.1:8000>. No key, no account, no config.
 
-The backend is a stdlib `http.server` — no web framework.
+Stdlib `http.server`, no web framework. `POST /api/search` streams progress as
+SSE. `POST /api/prefetch` fires 700ms after the url field settles, caches the
+page and loads weights in a background thread, reports nothing (anything broken
+resurfaces in search, which reports properly).
 
-- `POST /api/search` streams progress as server-sent events, so the UI reports
-  which stage it is in instead of showing a spinner that means nothing.
-- `POST /api/prefetch` is fired when the url field settles, ~700 ms after the
-  last keystroke. It caches the page and loads the weights in a background
-  thread, so both are usually done before the question is finished. It reports
-  nothing to the UI: anything that goes wrong resurfaces when search runs,
-  which reports it properly.
-
-The model loads once and is reused, and the last page fetched is cached, so
-changing granularity or top-n re-ranks without re-fetching.
-
-#### Running against the hosted API instead
-
-Append `?api=true` to the url and that search is ranked by
-[api.jina.ai](https://jina.ai/reranker/) rather than the local weights:
-
-```
-https://docs.sglang.io/docs/advanced_features/server_arguments?api=true
-```
-
-![Ranked by the hosted API](docs/img/ui-api.png)
-
-This one needs `JINA_API_KEY`. The flag is stripped before the page is
-fetched, the weights are not loaded if they are not going to be used, and the
-`backend` row reports which one actually ran. Same page, same question, same
-top hit:
-
-| backend | ranking |
-|---|---|
-| local, M3 Ultra | 1751 ms, score 0.6299 |
-| api.jina.ai | 383 ms, score 0.6308 |
-
-The hosted model runs on far better hardware than a laptop, so for a page this
-size it is several times quicker even including the network round trip. Local
-stays the default because it needs no key and no network.
-
-### Command line
+CLI:
 
 ```bash
 inpage --url https://jina.ai/news/jina-reranker-v3-5-faster-listwise-reranking-hybrid-attention-self-distillation/ \
        -q "how did they make it run faster without making the model bigger" \
-       --model-dir ~/models/jina-reranker-v3.5-mlx \
-       --open
+       --model-dir ~/models/jina-reranker-v3.5-mlx --open
 ```
 
 ```
-104 sentences -> 52 chunks, 271 ms in a single request
-  [1] 0.3136  The practical claim of jina-reranker-v3.5 is narrow and testable: at 0.6B
-                parameters, targeted training closes most of the gap to a 4B generalist...
-Wrote highlighted.html
+104 sentences -> 52 chunks, 271 ms in a single request via local (mlx)
+  [1] 0.3136  The practical claim of jina-reranker-v3.5 is narrow and testable: at 0.6B...
 ```
 
-Works on a local file too, no network needed:
-
-```bash
-inpage --file examples/jina-reranker-v3.5-blog.html -q "what do they admit it still cannot do well" -n 3
-```
-
-### As a library
+Library:
 
 ```python
 from inpage import InPageSearcher, fetch_html
 
 searcher = InPageSearcher("~/models/jina-reranker-v3.5-mlx")
-html = fetch_html("https://example.com/article")
-
-result = searcher.search(html, "why did the second attempt fail?", granularity=2, top_n=1)
-print(result.sentence_count, result.chunk_count, result.elapsed_ms)
+result = searcher.search(fetch_html(url), "why did the second attempt fail?", top_n=1)
 for hit in result.hits:
     print(hit.rank, round(hit.score, 4), hit.text[:100])
-
-open("out.html", "w").write(result.html)
 ```
 
-### Options
-
-| Flag | Default | What it does |
+| Flag | Default | |
 |---|---|---|
-| `-q, --question` | required | Plain-language question; keywords not required |
-| `-g, --granularity` | `2` | Sentences per chunk sent to the reranker |
-| `-n, --top-n` | `1` | How many ranked chunks to highlight |
-| `--url` / `--file` | — | Fetch through Reader, or read a local file |
-| `--open` | off | Open the result in a browser |
-| `--api` | off | Rank with api.jina.ai instead of the local weights |
+| `-q, --question` | required | Plain language, keywords not needed |
+| `-g, --granularity` | `2` | Sentences per chunk |
+| `-n, --top-n` | `1` | Chunks to highlight |
+| `--url` / `--file` | | Fetch, or read local |
+| `--api` | off | Rank via api.jina.ai |
+| `--open` | off | Open in browser |
 
-`inpage-serve` takes `--model-dir`, `--host`, `--port` and `--no-open`.
+`inpage-serve` takes `--model-dir`, `--host`, `--port`, `--no-open`.
 
-Granularity is a real trade-off. At `1` the highlight is tight but an answer
-split across two sentences can be cut in half. At `3` you catch more context
-and spend more tokens. `2` is a reasonable default.
+Granularity is a real trade-off. `1` gives tight highlights but splits answers
+that span two sentences. `3` catches more context, costs more tokens.
 
-## Three details that took real debugging
+### ?api=true
 
-**Chunks must not span block boundaries when highlighted.** A chunk of two
-sentences can straddle an `<h2>`. Highlighting `first.start .. last.end` in one
-range swallows the heading. Fix: emit one span *per sentence*, then merge
-adjacent spans only when the HTML between them is blank or purely inline
-markup. Overlapping hits still render as one continuous block; headings,
-captions and table cells break it.
+Append it to the url and that search runs on api.jina.ai instead of local
+weights. Needs `JINA_API_KEY`.
 
-**Code blocks are not prose.** Left in the candidate list, a `<pre>` listing
-gets glued to the sentence beside it and drags the chunk's score around. On the
-example page, excluding `pre`/`code` moved the top hit from a code-polluted
-chunk at 0.2745 to the actual answer sentence at 0.3079.
+![API backend](docs/img/ui-api.png)
 
-**Reader refuses urllib's default User-Agent.** `Python-urllib/3.x` is turned
-away at the edge with a 403 before the request reaches the API, with or without
-a key, so `reader.py` sends its own agent string. Worth knowing if you write
-your own client and cannot see why curl succeeds where Python does not. The
-direct fetch sends a browser agent for the same reason — plenty of sites serve
-nothing useful to an obvious script.
+Flag is stripped before fetching. Weights are not loaded if unused. The
+`backend` row says which ran.
+
+| backend | 453 chunks |
+|---|---|
+| local, M3 Ultra | 1751 ms, 0.6299 |
+| api.jina.ai | 383 ms, 0.6308 |
+
+~4.5x faster including the round trip, on much better hardware than a laptop.
+Local stays default: no key, no network.
+
+## Getting the page
+
+1. [Jina Reader](https://jina.ai/reader/) renders client-side pages, returns
+   clean markup. Anonymous use is rate limited and some networks are refused
+   outright: *"blocked from performing anonymous queries due to bad network
+   reputation"*.
+2. Plain HTTP GET. No key, no account.
+
+So the key is optional. Set `JINA_API_KEY` for Reader's rendering on JS-heavy
+pages, otherwise it falls back to a direct fetch. For server-rendered docs and
+articles the direct fetch is fine. Every screenshot here was made without a key.
+
+## Four things that took real debugging
+
+**Chunks must not span block boundaries when highlighted.** Two sentences can
+straddle an `<h2>`. Highlighting `first.start..last.end` swallows the heading.
+Fix: one span per sentence, merge adjacent spans only across blank or inline
+markup. Overlapping hits still render as one block; headings and table cells
+break it.
+
+**Code blocks are not prose.** A `<pre>` listing glued to the sentence beside it
+drags the chunk's score around. Excluding `pre`/`code` moved the top hit from a
+code-polluted chunk at 0.2745 to the answer at 0.3079.
+
+**urllib's default User-Agent gets 403'd.** `Python-urllib/3.x` is refused at
+the edge before reaching Reader or api.jina.ai, key or not, and Cloudflare
+returns a 1010 that reads exactly like an auth failure. Both clients send their
+own agent. Cost me time twice.
+
+**`hidden` loses to `display`.** Any element with explicit `display: flex` in
+CSS ignores the `hidden` attribute. Bit me three times in this one file, so
+every such rule now has a matching `[hidden] { display: none }`.
 
 ## Known limits
 
-- Highlights land on **sentences the reranker ranked highest**, which is not the
-  same as an extracted answer span. This is retrieval, not reading comprehension.
-- **Question-shaped sentences attract questions.** Ask "what killed her?" of a
-  detective story and the top hit is often a character asking the same thing,
-  because that is genuinely the most semantically similar sentence.
-- Pages that render entirely client-side give the Reader little to return.
-- The model has fixed upper bounds on candidate count and total candidate
-  length. Very long pages get split into multiple blocks by the checkpoint's own
-  batching, which costs the single-call property.
+- Highlights are the top-ranked sentences, not extracted answer spans. This is
+  retrieval, not reading comprehension.
+- Question-shaped sentences attract questions. Ask "what killed her?" of a
+  detective story and the top hit is often a character asking the same thing.
+  It genuinely is the most similar sentence.
+- Client-side-only pages give Reader little to return.
+- Fixed caps on candidate count and total length. Very long pages get split into
+  multiple blocks by the checkpoint's own batching, which costs the single-call
+  property.
 
 ## Tests
 
@@ -314,14 +244,12 @@ nothing useful to an obvious script.
 python -m pytest tests/ -q
 ```
 
-The offset contract is the thing worth testing: every sentence span, sliced out
-of the source HTML, must reproduce that sentence.
+The offset contract is the one worth having: every sentence span, sliced out of
+the source HTML, must reproduce that sentence.
 
 ## License
 
-Apache 2.0 for this code. The model,
-[jina-reranker-v3.5](https://huggingface.co/jinaai/jina-reranker-v3.5), is
-**CC-BY-NC-4.0** — non-commercial.
+Apache 2.0 for this code. The model is **CC-BY-NC-4.0**, non-commercial.
 [Contact Jina AI](https://jina.ai/contact-sales/) for commercial use.
 
 ```bibtex
