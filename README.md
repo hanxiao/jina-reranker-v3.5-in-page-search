@@ -1,40 +1,77 @@
 # jina-reranker-v3.5-in-page-search
 
-Ask a web page a question in plain language and get the answer highlighted **in
-the page itself**, not in a stripped-down copy of it. One listwise
+Ask a web page a question in plain language and the answer is highlighted **in
+the page itself**, with its own CSS, fonts and layout intact. One listwise
 [jina-reranker-v3.5](https://huggingface.co/jinaai/jina-reranker-v3.5) call
-ranks the whole document. No embedding index, no vector store, no chunk
-database. Runs locally on Apple Silicon through MLX.
+ranks every passage of the document. No embedding index, no vector store, no
+chunk database. Runs locally on Apple Silicon through MLX.
 
-![Answer highlighted in place](docs/img/highlight-top1.png)
+![In-page QA search UI](docs/img/ui-top1.png)
 
-The question above was *"how did they make it run faster without making the
-model bigger"*. Not one content word in it appears in the sentence it found.
+*104 sentences, 52 chunks, **271 ms**, one request. The question was "how did
+they make it run faster without making the model bigger" — not one content word
+in it appears in the sentence it found.*
 
-## Why this works without an index
+```bash
+inpage-serve --model-dir ~/models/jina-reranker-v3.5-mlx
+```
+
+Settings on the left, the rendered page on the right. `Highlights: top 3` shades
+the runners-up and lists them with their scores; clicking one scrolls the page
+to it.
+
+![Top 3 highlights](docs/img/ui-top3.png)
+
+---
+
+## Why a listwise reranker is the right tool here
 
 The usual way to search inside a document is to embed every chunk, store the
-vectors, embed the query, and take nearest neighbours. That machinery exists
-because scoring each chunk *independently* is cheap and parallel.
+vectors, embed the query, and take nearest neighbours. That architecture exists
+for a reason — but every one of those reasons disappears when the corpus is
+**one page you are reading right now**.
 
-A listwise reranker does the opposite and that turns out to be the right trade
-here. jina-reranker-v3.5 packs the query and **every candidate** into a single
-context window and runs self-attention across all of them at once, so each
-passage is scored while the model can see its competitors. For a single web
-page the entire document fits in one call: a 74 KB blog post is 98 sentences,
-49 chunks, and **one request that returns in about 260 ms** on an M3 Ultra.
+**1. There is nothing to amortise an index over.** An index is a cost you pay
+once so that many future queries get cheaper. Here the corpus has a lifetime of
+one page view. Building embeddings, writing them somewhere, and querying them
+back is strictly more work than one forward pass over the same text.
 
-Building an index for a document you are going to read once is wasted work.
+**2. Bi-encoders score each chunk blind to the others.** Embedding a chunk
+produces a vector that cannot depend on what else is on the page, because it
+was computed before the other chunks were seen. Relevance inside a document is
+almost always *comparative*: three paragraphs mention latency, and the question
+is which one actually answers the question. A listwise reranker packs the query
+and **every candidate into a single context** and runs self-attention across all
+of them, so each passage is scored while the model can see its competitors. The
+paper calls this in-context cross-document comparison, and it is exactly what
+late-interaction models like ColBERT give up by encoding passages independently.
+
+**3. A page fits in one context.** This is what makes the whole idea practical
+rather than theoretical. v3.5 takes **131K tokens**. A 74 KB blog post is 104
+sentences and 52 chunks — about 3.5K tokens. The entire document goes in as one
+candidate list, and the answer comes back in **271 ms** on an M3 Ultra. Latency
+is one prefill, not a pipeline.
+
+**4. Plain questions beat keyword search here.** Ctrl-F needs you to already
+know the words on the page. Every question in the screenshots above is answered
+correctly with near-zero lexical overlap: *"what do they admit it still cannot
+do well"* lands on the Limitations paragraph, which never uses the word "admit".
+
+The honest trade: quadratic attention over a long candidate list is expensive,
+which is the thing v3.5's hybrid attention was built to fix — see below. If you
+had a million documents you would still want a first-stage retriever in front.
+For one page, the retriever is the part you get to delete.
 
 ## Pipeline
 
 ![Pipeline](docs/img/pipeline.png)
 
-The one idea worth stating plainly: **the source HTML is never re-rendered.**
+The idea worth stating plainly: **the source HTML is never re-rendered.**
 Sentences are extracted with their byte offsets into the original markup, the
 reranker's output is mapped back through those offsets, and `<mark>` tags are
-spliced in. So the page keeps its own stylesheet, layout, tables, and figures,
-and the highlight lands inside them.
+spliced in. The page keeps its own stylesheet, tables and figures — in the
+screenshot above the blog's typography and code blocks are its own, not a
+reconstruction.
 
 ## How jina-reranker-v3.5 scores a list
 
@@ -45,15 +82,12 @@ passages with delimiter tokens and places the query in a trailing block. Causal
 self-attention over the full sequence produces contextual embeddings at those
 special token positions, a two-layer MLP projects them into a **512-dimensional**
 space, and query and document vectors are compared by **cosine similarity**.
-Joint encoding is what gives LBNL in-context cross-document comparison, which
-late-interaction models like ColBERT lack because they encode passages
-independently.
 
 **Hybrid 3L2G attention.** Full attention at all 28 layers dominates compute
 when candidate lists get long. v3.5 repeats **three sliding-window layers
 followed by two global layers**, giving 17 local and 11 global layers with a
-window of **w = 1024** tokens. Local layers drop attention cost from `O(L²)` to
-`O(L·w)`.
+window of **w = 1024** tokens, dropping attention cost from `O(L²)` to `O(L·w)`
+on the local layers.
 
 **The pinned terminal global layer.** This is the constraint that makes the
 architecture interesting. The query embedding token sits at the *end* of the
@@ -82,7 +116,8 @@ behaviour is what recovers the gap.
 
 Latency, A100, batch size 1, top-100 listwise, FlashAttention-2: BEIR NQ
 371 ms → 305 ms (**1.22×**); RTEB AILACasedocs 16.1 s → 10.3 s (**1.56×**).
-The hybrid schedule pays off most when passages are long.
+The hybrid schedule pays off most when passages are long, which is the regime a
+whole web page lands in.
 
 ## Install
 
@@ -106,31 +141,18 @@ hf download jinaai/jina-reranker-v3.5-mlx --local-dir ~/models/jina-reranker-v3.
 ### Web UI
 
 ```bash
-export JINA_API_KEY=...                # https://jina.ai/api-dashboard/
+export JINA_API_KEY=***                # https://jina.ai/api-dashboard/
 inpage-serve --model-dir ~/models/jina-reranker-v3.5-mlx
 ```
 
-Opens on <http://127.0.0.1:8000>. Settings on the left, the rendered page on
-the right.
-
-![Web UI](docs/img/web-ui.png)
-
-The right pane is **the page itself**, not a reconstruction of it. Highlights
-are spliced into the source HTML as `<mark>` tags, so every stylesheet, font,
-table and figure the page shipped with is still there -- the screenshot above
-keeps the blog's own typography and code blocks untouched. Ranked hits are
-listed bottom left with their scores; clicking one scrolls the page to it.
-
-The backend is a stdlib `http.server` with a single JSON endpoint,
-`POST /api/search` -- no web framework. The model loads once on the first
-request and is reused, and the last page fetched is cached, so changing
-granularity or top-n re-ranks without re-fetching.
+Opens on <http://127.0.0.1:8000>. The backend is a stdlib `http.server` with a
+single JSON endpoint, `POST /api/search` — no web framework. The model loads
+once on the first request and is reused, and the last page fetched is cached,
+so changing granularity or top-n re-ranks without re-fetching.
 
 ### Command line
 
 ```bash
-export JINA_API_KEY=...   # https://jina.ai/api-dashboard/
-
 inpage --url https://jina.ai/news/jina-reranker-v3-5-faster-listwise-reranking-hybrid-attention-self-distillation/ \
        -q "how did they make it run faster without making the model bigger" \
        --model-dir ~/models/jina-reranker-v3.5-mlx \
@@ -138,8 +160,8 @@ inpage --url https://jina.ai/news/jina-reranker-v3-5-faster-listwise-reranking-h
 ```
 
 ```
-98 sentences -> 49 chunks, 268 ms in a single request
-  [1] 0.3079  The practical claim of jina-reranker-v3.5 is narrow and testable: at 0.6B
+104 sentences -> 52 chunks, 271 ms in a single request
+  [1] 0.3136  The practical claim of jina-reranker-v3.5 is narrow and testable: at 0.6B
                 parameters, targeted training closes most of the gap to a 4B generalist...
 Wrote highlighted.html
 ```
@@ -182,11 +204,7 @@ Granularity is a real trade-off. At `1` the highlight is tight but an answer
 split across two sentences can be cut in half. At `3` you catch more context
 and spend more tokens. `2` is a reasonable default.
 
-`top_n` 2 and 3 shade the lower ranks in lighter yellow:
-
-![Top 3 highlights](docs/img/highlight-top3.png)
-
-## Two details that took real debugging
+## Three details that took real debugging
 
 **Chunks must not span block boundaries when highlighted.** A chunk of two
 sentences can straddle an `<h2>`. Highlighting `first.start .. last.end` in one
@@ -214,8 +232,8 @@ your own client and cannot see why curl succeeds where Python does not.
   because that is genuinely the most semantically similar sentence.
 - Pages that render entirely client-side give the Reader little to return.
 - The model has fixed upper bounds on candidate count and total candidate
-  length, as the paper notes. Very long pages get chunked into multiple blocks
-  by the checkpoint's own batching.
+  length. Very long pages get split into multiple blocks by the checkpoint's own
+  batching, which costs the single-call property.
 
 ## Tests
 
