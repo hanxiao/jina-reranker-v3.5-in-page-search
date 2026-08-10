@@ -22,6 +22,16 @@ to it.
 
 ![Top 3 highlights](docs/img/ui-top3.png)
 
+The stages stream back while the search runs, so a slow fetch or the one-off
+model load is visible rather than looking like a hang:
+
+![Progress while searching](docs/img/ui-progress.png)
+
+It works on any page, not just prose. Wikipedia keeps its sidebar, tables and
+rendered math:
+
+![Wikipedia](docs/img/ui-wikipedia.png)
+
 ---
 
 ## Why a listwise reranker is the right tool here
@@ -119,6 +129,22 @@ Latency, A100, batch size 1, top-100 listwise, FlashAttention-2: BEIR NQ
 The hybrid schedule pays off most when passages are long, which is the regime a
 whole web page lands in.
 
+## Getting the page
+
+Two sources, tried in order:
+
+1. **[Jina Reader](https://jina.ai/reader/)** (`r.jina.ai`) renders client-side
+   pages and returns clean markup. Anonymous use is rate limited, and some
+   networks are refused outright — the error is explicit about it: *"blocked
+   from performing anonymous queries due to bad network reputation"*.
+2. **A plain HTTP GET**, which needs no key and no account.
+
+So a key is optional. Set `JINA_API_KEY` if you have one and you get Reader's
+rendering on JavaScript-heavy pages; without it the tool falls back to fetching
+the page directly and says so in the progress list. For ordinary
+server-rendered documentation and articles the direct fetch is perfectly good
+input — every screenshot on this page was produced without a key.
+
 ## Install
 
 Apple Silicon required (MLX).
@@ -141,14 +167,16 @@ hf download jinaai/jina-reranker-v3.5-mlx --local-dir ~/models/jina-reranker-v3.
 ### Web UI
 
 ```bash
-export JINA_API_KEY=***                # https://jina.ai/api-dashboard/
 inpage-serve --model-dir ~/models/jina-reranker-v3.5-mlx
 ```
 
-Opens on <http://127.0.0.1:8000>. The backend is a stdlib `http.server` with a
-single JSON endpoint, `POST /api/search` — no web framework. The model loads
-once on the first request and is reused, and the last page fetched is cached,
-so changing granularity or top-n re-ranks without re-fetching.
+Opens on <http://127.0.0.1:8000>. No API key, no account, no configuration.
+
+The backend is a stdlib `http.server` — no web framework. `POST /api/search`
+streams progress back as server-sent events, so the UI reports which stage it
+is in instead of showing a spinner that means nothing. The model loads once on
+the first request and is reused, and the last page fetched is cached, so
+changing granularity or top-n re-ranks without re-fetching.
 
 ### Command line
 
@@ -221,7 +249,9 @@ chunk at 0.2745 to the actual answer sentence at 0.3079.
 **Reader refuses urllib's default User-Agent.** `Python-urllib/3.x` is turned
 away at the edge with a 403 before the request reaches the API, with or without
 a key, so `reader.py` sends its own agent string. Worth knowing if you write
-your own client and cannot see why curl succeeds where Python does not.
+your own client and cannot see why curl succeeds where Python does not. The
+direct fetch sends a browser agent for the same reason — plenty of sites serve
+nothing useful to an obvious script.
 
 ## Known limits
 

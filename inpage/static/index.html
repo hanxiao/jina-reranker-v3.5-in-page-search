@@ -82,6 +82,19 @@
   .c1 { background: #ffd54f; } .c2 { background: #ffe082; } .c3 { background: #fff0b3; }
 
   .err { color: #b3261e; font-size: 11px; line-height: 1.5; white-space: pre-wrap; }
+
+  /* staged progress: each step lights up as the server reports reaching it */
+  .steps { display: flex; flex-direction: column; gap: 5px; font-size: 11px; }
+  .steps[hidden] { display: none; }
+  .step { display: flex; align-items: center; gap: 7px; color: #94a3b8; }
+  .step .box { width: 9px; height: 9px; flex: 0 0 auto; border: 1px solid currentColor; }
+  .step.active { color: var(--ink); font-weight: 700; }
+  .step.active .box { background: var(--accent); border-color: var(--line);
+                      animation: pulse 1s ease-in-out infinite; }
+  .step.done { color: var(--muted); }
+  .step.done .box { background: var(--muted); border-color: var(--muted); }
+  .step small { color: #94a3b8; font-weight: 400; }
+  @keyframes pulse { 50% { opacity: 0.35; } }
   .note { font-size: 10px; color: var(--muted); line-height: 1.5; }
   a { color: inherit; }
 
@@ -162,6 +175,7 @@
       <div class="stat"><dt>latency</dt><dd id="s-ms">&mdash;</dd></div>
       <div class="stat"><dt>requests</dt><dd id="s-req">&mdash;</dd></div>
     </dl>
+    <div class="steps" id="steps" hidden></div>
     <div class="legendbar" id="legend" hidden></div>
     <div id="hits"></div>
     <div class="err" id="err" hidden></div>
@@ -189,12 +203,35 @@
 
   const setText = (id, value) => { $(id).textContent = value; };
 
+  // Shown up front and lit as the server reports reaching each one.
+  const STEPS = [
+    ['fetch', 'fetch page'],
+    ['model', 'load model'],
+    ['rank', 'rank passages'],
+    ['render', 'render highlights'],
+  ];
+
+  function renderSteps(activeIndex, notes) {
+    $('steps').innerHTML = STEPS.map(([key, label], i) => {
+      const state = i < activeIndex ? 'done' : (i === activeIndex ? 'active' : '');
+      const note = notes[key] ? ' <small>' + escapeHtml(notes[key]) + '</small>' : '';
+      return '<div class="step ' + state + '"><span class="box"></span>' +
+             '<span>' + label + note + '</span></div>';
+    }).join('');
+  }
+
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     $('go').disabled = true;
     $('bar').hidden = false;
     $('err').hidden = true;
     $('hits').innerHTML = '';
+    $('legend').hidden = true;
+
+    const notes = {};
+    let active = 0;
+    $('steps').hidden = false;
+    renderSteps(0, notes);
 
     try {
       const response = await fetch('/api/search', {
@@ -207,8 +244,24 @@
           top_n: Number($('topn').value),
         }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || response.statusText);
+      if (!response.ok) throw new Error('server returned ' + response.status);
+
+      const data = await readStream(response, (payload) => {
+        if (payload.step === 'fetched') {
+          notes.fetch = payload.message;
+          active = Math.max(active, 1);
+        } else {
+          const index = STEPS.findIndex(([key]) => key === payload.step);
+          if (index >= 0) {
+            active = index;
+            if (payload.message) notes[payload.step] = payload.message;
+          }
+        }
+        renderSteps(active, notes);
+      });
+
+      renderSteps(STEPS.length, notes);
+      setTimeout(() => { $('steps').hidden = true; }, 700);
 
       const frame = $('frame');
       frame.srcdoc = data.html;
@@ -226,6 +279,7 @@
       setText('s-chunk', data.chunks);
       setText('s-ms', data.elapsed_ms + ' ms');
       setText('s-req', '1');
+      $('barurl').title = data.source || '';
 
       const topN = Number($('topn').value);
       const legend = $('legend');
@@ -247,6 +301,7 @@
         });
       });
     } catch (error) {
+      $('steps').hidden = true;
       $('err').hidden = false;
       $('err').textContent = String(error.message || error);
     } finally {
@@ -254,6 +309,35 @@
       $('bar').hidden = true;
     }
   });
+
+  /** Read the SSE body, reporting stages, resolving with the final result. */
+  async function readStream(response, onStage) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let result = null;
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let split;
+      while ((split = buffer.indexOf('\n\n')) !== -1) {
+        const frame = buffer.slice(0, split);
+        buffer = buffer.slice(split + 2);
+        const name = /^event: (.*)$/m.exec(frame)?.[1];
+        const body = /^data: ([\s\S]*)$/m.exec(frame)?.[1];
+        if (!name || !body) continue;
+        const payload = JSON.parse(body);
+        if (name === 'failed') throw new Error(payload.error);
+        if (name === 'result') result = payload;
+        else onStage(payload);
+      }
+    }
+    if (!result) throw new Error('the server closed the connection early');
+    return result;
+  }
 
   function escapeHtml(value) {
     return value.replace(/[&<>"]/g, (c) =>

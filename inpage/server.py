@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional
 
-from .reader import fetch_html
+from .reader import fetch_page
 from .search import InPageSearcher
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -45,12 +45,18 @@ class _State:
             print("Model ready.", flush=True)
         return self._searcher
 
-    def html_for(self, url: str) -> str:
+    def html_for(self, url: str) -> tuple[str, str]:
+        """Return (html, note). Cached, so re-ranking never re-fetches."""
         if self._cache_key == url and self._cache_html:
-            return self._cache_html
-        html = fetch_html(url)
-        self._cache_key, self._cache_html = url, html
-        return html
+            return self._cache_html, "cached"
+        page = fetch_page(url)
+        note = page.note or ("via Reader" if page.source == "reader" else "fetched directly")
+        self._cache_key, self._cache_html = url, page.html
+        return page.html, note
+
+    @property
+    def model_loaded(self) -> bool:
+        return self._searcher is not None
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -92,37 +98,64 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "bad request body"})
             return
 
+        payload = json.loads(self.rfile.read(length))
+
+        # Server-sent events, so the UI can show real stages rather than a
+        # spinner that means nothing. Fetching a large page and loading 1.1 GB
+        # of weights both take long enough to be worth reporting.
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+        def emit(event: str, **data) -> None:
+            body = json.dumps(data)
+            self.wfile.write(f"event: {event}\ndata: {body}\n\n".encode())
+            self.wfile.flush()
+
         try:
-            payload = json.loads(self.rfile.read(length))
             url = (payload.get("url") or "").strip()
             question = (payload.get("question") or "").strip()
             if not url or not question:
                 raise ValueError("url and question are both required")
 
-            html = self.state.html_for(url)
+            emit("stage", step="fetch", message="fetching page")
+            html, note = self.state.html_for(url)
+            emit("stage", step="fetched", message=note, bytes=len(html))
+
+            # Notes only carry what the step label does not already say.
+            if not self.state.model_loaded:
+                emit("stage", step="model", message="first run, ~1.1 GB")
+            searcher = self.state.searcher
+
+            emit("stage", step="rank")
             with self.state._lock:  # one forward pass at a time
-                result = self.state.searcher.search(
+                result = searcher.search(
                     html,
                     question,
                     granularity=int(payload.get("granularity", 2)),
                     top_n=int(payload.get("top_n", 1)),
                     base_url=url,
                 )
-            self._send_json(
-                200,
-                {
-                    "html": result.html,
-                    "sentences": result.sentence_count,
-                    "chunks": result.chunk_count,
-                    "elapsed_ms": result.elapsed_ms,
-                    "hits": [
-                        {"rank": h.rank, "score": round(h.score, 4), "text": h.text}
-                        for h in result.hits
-                    ],
-                },
+
+            emit(
+                "result",
+                html=result.html,
+                sentences=result.sentence_count,
+                chunks=result.chunk_count,
+                elapsed_ms=result.elapsed_ms,
+                source=note,
+                hits=[
+                    {"rank": h.rank, "score": round(h.score, 4), "text": h.text}
+                    for h in result.hits
+                ],
             )
-        except Exception as exc:  # surfaced in the UI status bar
-            self._send_json(500, {"error": str(exc)})
+        except Exception as exc:  # surfaced in the UI
+            try:
+                emit("failed", error=str(exc))
+            except Exception:
+                pass
 
     def log_message(self, fmt, *args):  # quieter console
         return
