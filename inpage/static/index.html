@@ -41,6 +41,8 @@
     margin: 0; padding: 12px 12px 14px;
     display: flex; flex-direction: column; gap: 10px;
   }
+  /* display:flex would otherwise beat the hidden attribute */
+  fieldset[hidden] { display: none; }
   legend { padding: 0 6px; font-size: 11px; font-weight: 700; }
 
   label.row { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted); }
@@ -66,6 +68,7 @@
   .stat dt { color: var(--muted); }
   .stat dd { margin: 0; font-weight: 700; }
   dl { margin: 0; display: flex; flex-direction: column; gap: 6px; }
+  dl[hidden] { display: none; }
 
   .hit { border-left: 3px solid var(--accent); padding: 6px 0 6px 8px; font-size: 11px; cursor: pointer; }
   .hit + .hit { margin-top: 8px; }
@@ -168,13 +171,14 @@
     </fieldset>
   </form>
 
-  <fieldset>
+  <!-- Hidden until a search runs; an empty box of em dashes says nothing. -->
+  <fieldset id="result" hidden>
     <legend>result</legend>
-    <dl>
-      <div class="stat"><dt>sentences</dt><dd id="s-sent">&mdash;</dd></div>
-      <div class="stat"><dt>chunks</dt><dd id="s-chunk">&mdash;</dd></div>
-      <div class="stat"><dt>latency</dt><dd id="s-ms">&mdash;</dd></div>
-      <div class="stat"><dt>requests</dt><dd id="s-req">&mdash;</dd></div>
+    <dl id="stats" hidden>
+      <div class="stat"><dt>sentences</dt><dd id="s-sent"></dd></div>
+      <div class="stat"><dt>chunks</dt><dd id="s-chunk"></dd></div>
+      <div class="stat"><dt>latency</dt><dd id="s-ms"></dd></div>
+      <div class="stat"><dt>requests</dt><dd id="s-req"></dd></div>
     </dl>
     <div class="steps" id="steps" hidden></div>
     <div class="legendbar" id="legend" hidden></div>
@@ -264,6 +268,10 @@
     $('hits').innerHTML = '';
     $('legend').hidden = true;
 
+    // The panel appears with the progress list and stays for the result.
+    $('result').hidden = false;
+    $('stats').hidden = true;
+
     const notes = {};
     let active = 0;
     $('steps').hidden = false;
@@ -311,6 +319,7 @@
           ?.scrollIntoView({ block: 'center' });
       }, { once: true });
 
+      $('stats').hidden = false;
       setText('s-sent', data.sentences);
       setText('s-chunk', data.chunks);
       setText('s-ms', data.elapsed_ms + ' ms');
