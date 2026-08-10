@@ -33,8 +33,13 @@ class _State:
         self.model_dir = model_dir
         self._searcher: Optional[InPageSearcher] = None
         self._lock = threading.Lock()
+        # Guards the page cache so a prefetch and a search racing on the same
+        # url fetch it once rather than twice.
+        self._fetch_lock = threading.Lock()
         self._cache_key: Optional[str] = None
         self._cache_html: Optional[str] = None
+        self._cache_note: str = ""
+        self._warming = False
 
     @property
     def searcher(self) -> InPageSearcher:
@@ -47,12 +52,32 @@ class _State:
 
     def html_for(self, url: str) -> tuple[str, str]:
         """Return (html, note). Cached, so re-ranking never re-fetches."""
-        if self._cache_key == url and self._cache_html:
-            return self._cache_html, "cached"
-        page = fetch_page(url)
-        note = page.note or ("via Reader" if page.source == "reader" else "fetched directly")
-        self._cache_key, self._cache_html = url, page.html
-        return page.html, note
+        with self._fetch_lock:
+            if self._cache_key == url and self._cache_html:
+                return self._cache_html, self._cache_note or "cached"
+            page = fetch_page(url)
+            note = page.note or ("via Reader" if page.source == "reader" else "fetched directly")
+            self._cache_key, self._cache_html, self._cache_note = url, page.html, note
+            return page.html, note
+
+    def is_cached(self, url: str) -> bool:
+        return self._cache_key == url and bool(self._cache_html)
+
+    def warm_model(self) -> None:
+        """Load the weights in the background so the first search does not."""
+        if self._searcher is not None or self._warming:
+            return
+        self._warming = True
+
+        def run() -> None:
+            try:
+                _ = self.searcher
+            except Exception as exc:  # reported on the next real search
+                print(f"model warm-up failed: {exc}", flush=True)
+            finally:
+                self._warming = False
+
+        threading.Thread(target=run, daemon=True).start()
 
     @property
     def model_loaded(self) -> bool:
@@ -89,7 +114,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": "not found"})
 
     def do_POST(self) -> None:
-        if self.path != "/api/search":
+        if self.path not in ("/api/search", "/api/prefetch"):
             self._send_json(404, {"error": "not found"})
             return
 
@@ -99,6 +124,10 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         payload = json.loads(self.rfile.read(length))
+
+        if self.path == "/api/prefetch":
+            self._handle_prefetch(payload)
+            return
 
         # Server-sent events, so the UI can show real stages rather than a
         # spinner that means nothing. Fetching a large page and loading 1.1 GB
@@ -156,6 +185,29 @@ class _Handler(BaseHTTPRequestHandler):
                 emit("failed", error=str(exc))
             except Exception:
                 pass
+
+    def _handle_prefetch(self, payload: dict) -> None:
+        """Warm the page cache and the weights while the question is typed.
+
+        Called as soon as the url field settles, so by the time someone has
+        written a question the slow parts are usually already done.
+        """
+        url = (payload.get("url") or "").strip()
+        if not url:
+            self._send_json(400, {"error": "url required"})
+            return
+
+        self.state.warm_model()
+        if self.state.is_cached(url):
+            self._send_json(200, {"cached": True, "note": "page ready"})
+            return
+
+        try:
+            _, note = self.state.html_for(url)
+            self._send_json(200, {"cached": True, "note": note})
+        except Exception as exc:
+            # A prefetch failure is not fatal; the search will report it.
+            self._send_json(200, {"cached": False, "note": str(exc)})
 
     def log_message(self, fmt, *args):  # quieter console
         return
