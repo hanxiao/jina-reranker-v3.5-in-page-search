@@ -3,107 +3,198 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>In-Page QA Test - jina-reranker-v3.5</title>
+<title>in-page qa search / jina-reranker-v3.5</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
 <style>
   :root {
-    --line: #e3e5e8;
-    --muted: #6b7280;
-    --bg: #fafbfc;
+    --bg: #f9fafc;
+    --ink: #0f172a;
+    --muted: #64748b;
+    --line: #0f172a;
+    --hair: #cbd5e1;
+    --accent: #f5a623;
+    --panel: 340px;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body {
+    display: flex;
+    background: var(--bg); color: var(--ink);
+    font: 13px/1.6 "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  /* ---------- left: settings ---------- */
+  aside {
+    width: var(--panel); flex: 0 0 var(--panel);
+    border-right: 1px solid var(--line);
     display: flex; flex-direction: column;
-    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    color: #1f2328; background: var(--bg);
+    overflow-y: auto; padding: 18px 16px; gap: 16px;
   }
-  form.toolbar {
-    display: flex; align-items: stretch; flex-wrap: wrap;
-    background: #fff; border-bottom: 1px solid var(--line);
+  .brand { font-weight: 800; font-size: 15px; letter-spacing: -0.4px; }
+  .brand span { color: var(--accent); }
+  .tagline { color: var(--muted); font-size: 11px; line-height: 1.5; }
+
+  fieldset {
+    border: 1px solid var(--line); border-radius: 0;
+    margin: 0; padding: 12px 12px 14px;
+    display: flex; flex-direction: column; gap: 10px;
   }
-  .field { display: flex; flex-direction: column; justify-content: center;
-           padding: 6px 12px; border-right: 1px solid var(--line); min-width: 0; }
-  .field.grow { flex: 1 1 260px; }
-  .field label { font-size: 11px; color: var(--muted); }
-  .field input, .field select {
-    border: 0; outline: 0; background: transparent; font: inherit;
-    padding: 2px 0; width: 100%; min-width: 0; color: inherit;
+  legend { padding: 0 6px; font-size: 11px; font-weight: 700; }
+
+  label.row { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted); }
+  input, select, textarea {
+    font: inherit; font-size: 12px; color: var(--ink);
+    background: #fff; border: 1px solid var(--hair); border-radius: 0;
+    padding: 7px 8px; width: 100%;
   }
+  textarea { resize: vertical; min-height: 58px; }
+  input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
   button {
-    border: 0; background: #fff; font: inherit; font-weight: 600;
-    padding: 0 22px; cursor: pointer; color: #0969da;
+    font: inherit; font-weight: 700; font-size: 12px;
+    background: var(--accent); color: #1a1205;
+    border: 1px solid var(--line); border-radius: 0;
+    padding: 9px 12px; cursor: pointer; width: 100%;
   }
-  button:hover:not(:disabled) { background: #f3f4f6; }
-  button:disabled { color: var(--muted); cursor: default; }
-  .status {
-    display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
-    padding: 6px 14px; font-size: 12px; color: var(--muted);
-    background: #fff; border-bottom: 1px solid var(--line);
+  button:hover:not(:disabled) { filter: brightness(1.06); }
+  button:disabled { background: #e2e8f0; color: var(--muted); cursor: default; }
+
+  .stat { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; }
+  .stat dt { color: var(--muted); }
+  .stat dd { margin: 0; font-weight: 700; }
+  dl { margin: 0; display: flex; flex-direction: column; gap: 6px; }
+
+  .hit { border-left: 3px solid var(--accent); padding: 6px 0 6px 8px; font-size: 11px; cursor: pointer; }
+  .hit + .hit { margin-top: 8px; }
+  .hit:hover { background: #fff; }
+  .hit b { font-weight: 700; }
+  .hit p { margin: 3px 0 0; color: var(--muted); line-height: 1.5; }
+  .hit-2 { border-left-color: #ffd98a; }
+  .hit-3 { border-left-color: #ffeec4; }
+
+  .legendbar { display: flex; gap: 10px; font-size: 10px; color: var(--muted); }
+  /* display:flex would otherwise beat the hidden attribute */
+  .legendbar[hidden] { display: none; }
+  .chip { display: inline-block; width: 9px; height: 9px; margin-right: 3px; vertical-align: middle; }
+  .c1 { background: #ffd54f; } .c2 { background: #ffe082; } .c3 { background: #fff0b3; }
+
+  .err { color: #b3261e; font-size: 11px; line-height: 1.5; white-space: pre-wrap; }
+  .note { font-size: 10px; color: var(--muted); line-height: 1.5; }
+  a { color: inherit; }
+
+  /* ---------- right: rendered page ---------- */
+  main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .bar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 14px; border-bottom: 1px solid var(--line);
+    font-size: 11px; color: var(--muted); background: #fff;
+    white-space: nowrap; overflow: hidden;
   }
-  .status.error { color: #b3261e; }
-  .legend { display: inline-flex; align-items: center; gap: 4px; }
-  .chip { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
-  .r1 { background: #ffd54f; } .r2 { background: #ffe082; } .r3 { background: #fff0b3; }
-  /* Both fill the remaining height; only one is ever shown. min-height:0 stops
-     the flex child from being sized by its content and overflowing. */
-  #frame, .placeholder { flex: 1 1 auto; min-height: 0; width: 100%; }
+  .bar .url { overflow: hidden; text-overflow: ellipsis; }
+  .dot { width: 7px; height: 7px; background: var(--hair); flex: 0 0 auto; }
+  .dot.live { background: #16a34a; }
+  #frame, .empty { flex: 1 1 auto; min-height: 0; width: 100%; }
   #frame { border: 0; background: #fff; display: block; }
-  #frame[hidden], .placeholder[hidden] { display: none; }
-  .placeholder {
-    display: flex; align-items: center; justify-content: center;
-    color: #9aa0a6; font-size: 15px; text-align: center; padding: 24px;
-  }
+  #frame[hidden], .empty[hidden] { display: none; }
+  .empty { display: flex; align-items: center; justify-content: center; color: #94a3b8; font-size: 12px; }
   progress { width: 100%; height: 2px; display: block; border: 0; }
+
+  @media (max-width: 860px) {
+    body { flex-direction: column; }
+    aside { width: 100%; flex: 0 0 auto; border-right: 0; border-bottom: 1px solid var(--line); }
+  }
 </style>
 </head>
 <body>
-<form class="toolbar" id="form">
-  <div class="field grow">
-    <label for="url">Page URL</label>
-    <input id="url" name="url" type="url" required
-           value="https://jina.ai/news/jina-reranker-v3-5-faster-listwise-reranking-hybrid-attention-self-distillation/">
-  </div>
-  <div class="field grow">
-    <label for="question">Question</label>
-    <input id="question" name="question" required
-           placeholder="Ask in plain language, no keywords needed"
-           value="how did they make it run faster without making the model bigger">
-  </div>
-  <div class="field">
-    <label for="granularity">Granularity</label>
-    <select id="granularity">
-      <option value="1">1 sentence</option>
-      <option value="2" selected>2 sentences</option>
-      <option value="3">3 sentences</option>
-    </select>
-  </div>
-  <div class="field">
-    <label for="topn">Highlights</label>
-    <select id="topn">
-      <option value="1" selected>Top 1</option>
-      <option value="2">Top 2</option>
-      <option value="3">Top 3</option>
-    </select>
-  </div>
-  <button type="submit" id="go">Search</button>
-</form>
 
-<progress id="bar" hidden></progress>
-<div class="status" id="status">Ready. The whole page is ranked in one listwise call.</div>
-<div class="placeholder" id="placeholder">Results render here, inside the original page.</div>
-<iframe id="frame" hidden sandbox="allow-same-origin"></iframe>
+<aside>
+  <div>
+    <div class="brand">in-page<span>.</span>qa</div>
+    <div class="tagline">
+      one listwise jina-reranker-v3.5 call ranks every passage of a page.
+      no index, no vector store.
+    </div>
+  </div>
+
+  <form id="form">
+    <fieldset>
+      <legend>source</legend>
+      <label class="row">page url
+        <input id="url" type="url" required
+               value="https://jina.ai/news/jina-reranker-v3-5-faster-listwise-reranking-hybrid-attention-self-distillation/">
+      </label>
+      <label class="row">question
+        <textarea id="question" required
+                  placeholder="ask in plain language, no keywords needed">how did they make it run faster without making the model bigger</textarea>
+      </label>
+    </fieldset>
+
+    <fieldset style="margin-top:16px">
+      <legend>ranking</legend>
+      <div class="pair">
+        <label class="row">granularity
+          <select id="granularity">
+            <option value="1">1 sentence</option>
+            <option value="2" selected>2 sentences</option>
+            <option value="3">3 sentences</option>
+          </select>
+        </label>
+        <label class="row">highlights
+          <select id="topn">
+            <option value="1" selected>top 1</option>
+            <option value="2">top 2</option>
+            <option value="3">top 3</option>
+          </select>
+        </label>
+      </div>
+      <button type="submit" id="go">search</button>
+    </fieldset>
+  </form>
+
+  <fieldset>
+    <legend>result</legend>
+    <dl>
+      <div class="stat"><dt>sentences</dt><dd id="s-sent">&mdash;</dd></div>
+      <div class="stat"><dt>chunks</dt><dd id="s-chunk">&mdash;</dd></div>
+      <div class="stat"><dt>latency</dt><dd id="s-ms">&mdash;</dd></div>
+      <div class="stat"><dt>requests</dt><dd id="s-req">&mdash;</dd></div>
+    </dl>
+    <div class="legendbar" id="legend" hidden></div>
+    <div id="hits"></div>
+    <div class="err" id="err" hidden></div>
+  </fieldset>
+
+  <div class="note">
+    highlights are spliced into the original html, so the page keeps its own
+    stylesheet and layout. model runs locally through mlx.
+  </div>
+</aside>
+
+<main>
+  <div class="bar">
+    <span class="dot" id="dot"></span>
+    <span class="url" id="barurl">nothing loaded</span>
+  </div>
+  <progress id="bar" hidden></progress>
+  <div class="empty" id="empty">the rendered page appears here, with the answer highlighted in place</div>
+  <iframe id="frame" hidden sandbox="allow-same-origin"></iframe>
+</main>
 
 <script>
   const $ = (id) => document.getElementById(id);
-  const form = $('form'), bar = $('bar'), status = $('status');
-  const frame = $('frame'), placeholder = $('placeholder'), go = $('go');
+  const form = $('form');
+
+  const setText = (id, value) => { $(id).textContent = value; };
 
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
-    go.disabled = true;
-    bar.hidden = false;
-    status.className = 'status';
-    status.textContent = 'Reading page and ranking passages...';
+    $('go').disabled = true;
+    $('bar').hidden = false;
+    $('err').hidden = true;
+    $('hits').innerHTML = '';
 
     try {
       const response = await fetch('/api/search', {
@@ -119,31 +210,55 @@
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || response.statusText);
 
+      const frame = $('frame');
       frame.srcdoc = data.html;
       frame.hidden = false;
-      placeholder.hidden = true;
+      $('empty').hidden = true;
+      $('dot').classList.add('live');
+      $('barurl').textContent = $('url').value.trim();
+
       frame.addEventListener('load', () => {
-        // Jump to the best hit so the answer is on screen immediately.
-        const target = frame.contentDocument?.getElementById('jina-hit-0');
-        target?.scrollIntoView({ block: 'center' });
+        frame.contentDocument?.getElementById('jina-hit-0')
+          ?.scrollIntoView({ block: 'center' });
       }, { once: true });
 
+      setText('s-sent', data.sentences);
+      setText('s-chunk', data.chunks);
+      setText('s-ms', data.elapsed_ms + ' ms');
+      setText('s-req', '1');
+
       const topN = Number($('topn').value);
-      const legend = topN > 1
-        ? ' &nbsp; ' + Array.from({ length: topN }, (_, i) =>
-            `<span class="legend"><span class="chip r${i + 1}"></span>${i + 1}</span>`).join(' ')
-        : '';
-      status.innerHTML =
-        `${data.sentences} sentences, ${data.chunks} chunks, ` +
-        `<strong>${data.elapsed_ms} ms</strong> in a single request` + legend;
+      const legend = $('legend');
+      legend.hidden = topN < 2;
+      legend.innerHTML = Array.from({ length: topN }, (_, i) =>
+        `<span><span class="chip c${i + 1}"></span>rank ${i + 1}</span>`).join('');
+
+      $('hits').innerHTML = data.hits.map((hit) => `
+        <div class="hit hit-${hit.rank}" data-anchor="jina-hit-${hit.rank - 1}">
+          <b>${hit.rank}. ${hit.score.toFixed(4)}</b>
+          <p>${escapeHtml(hit.text.slice(0, 180))}${hit.text.length > 180 ? '...' : ''}</p>
+        </div>`).join('');
+
+      // Clicking a hit in the panel jumps the rendered page to it.
+      $('hits').querySelectorAll('.hit').forEach((element) => {
+        element.addEventListener('click', () => {
+          frame.contentDocument?.getElementById(element.dataset.anchor)
+            ?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        });
+      });
     } catch (error) {
-      status.className = 'status error';
-      status.textContent = String(error.message || error);
+      $('err').hidden = false;
+      $('err').textContent = String(error.message || error);
     } finally {
-      go.disabled = false;
-      bar.hidden = true;
+      $('go').disabled = false;
+      $('bar').hidden = true;
     }
   });
+
+  function escapeHtml(value) {
+    return value.replace(/[&<>"]/g, (c) =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  }
 </script>
 </body>
 </html>

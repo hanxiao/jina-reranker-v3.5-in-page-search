@@ -110,11 +110,16 @@ export JINA_API_KEY=...                # https://jina.ai/api-dashboard/
 inpage-serve --model-dir ~/models/jina-reranker-v3.5-mlx
 ```
 
-Opens on <http://127.0.0.1:8000>. Type a URL and a question, pick granularity
-and how many hits to highlight, and the page comes back with the answer marked
-inside it.
+Opens on <http://127.0.0.1:8000>. Settings on the left, the rendered page on
+the right.
 
 ![Web UI](docs/img/web-ui.png)
+
+The right pane is **the page itself**, not a reconstruction of it. Highlights
+are spliced into the source HTML as `<mark>` tags, so every stylesheet, font,
+table and figure the page shipped with is still there -- the screenshot above
+keeps the blog's own typography and code blocks untouched. Ranked hits are
+listed bottom left with their scores; clicking one scrolls the page to it.
 
 The backend is a stdlib `http.server` with a single JSON endpoint,
 `POST /api/search` -- no web framework. The model loads once on the first
