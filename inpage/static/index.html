@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>In-Page QA Test - jina-reranker-v3.5</title>
+<style>
+  :root {
+    --line: #e3e5e8;
+    --muted: #6b7280;
+    --bg: #fafbfc;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: #1f2328; background: var(--bg);
+  }
+  form.toolbar {
+    display: flex; align-items: stretch; flex-wrap: wrap;
+    background: #fff; border-bottom: 1px solid var(--line);
+  }
+  .field { display: flex; flex-direction: column; justify-content: center;
+           padding: 6px 12px; border-right: 1px solid var(--line); min-width: 0; }
+  .field.grow { flex: 1 1 260px; }
+  .field label { font-size: 11px; color: var(--muted); }
+  .field input, .field select {
+    border: 0; outline: 0; background: transparent; font: inherit;
+    padding: 2px 0; width: 100%; min-width: 0; color: inherit;
+  }
+  button {
+    border: 0; background: #fff; font: inherit; font-weight: 600;
+    padding: 0 22px; cursor: pointer; color: #0969da;
+  }
+  button:hover:not(:disabled) { background: #f3f4f6; }
+  button:disabled { color: var(--muted); cursor: default; }
+  .status {
+    display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+    padding: 6px 14px; font-size: 12px; color: var(--muted);
+    background: #fff; border-bottom: 1px solid var(--line);
+  }
+  .status.error { color: #b3261e; }
+  .legend { display: inline-flex; align-items: center; gap: 4px; }
+  .chip { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  .r1 { background: #ffd54f; } .r2 { background: #ffe082; } .r3 { background: #fff0b3; }
+  /* Both fill the remaining height; only one is ever shown. min-height:0 stops
+     the flex child from being sized by its content and overflowing. */
+  #frame, .placeholder { flex: 1 1 auto; min-height: 0; width: 100%; }
+  #frame { border: 0; background: #fff; display: block; }
+  #frame[hidden], .placeholder[hidden] { display: none; }
+  .placeholder {
+    display: flex; align-items: center; justify-content: center;
+    color: #9aa0a6; font-size: 15px; text-align: center; padding: 24px;
+  }
+  progress { width: 100%; height: 2px; display: block; border: 0; }
+</style>
+</head>
+<body>
+<form class="toolbar" id="form">
+  <div class="field grow">
+    <label for="url">Page URL</label>
+    <input id="url" name="url" type="url" required
+           value="https://jina.ai/news/jina-reranker-v3-5-faster-listwise-reranking-hybrid-attention-self-distillation/">
+  </div>
+  <div class="field grow">
+    <label for="question">Question</label>
+    <input id="question" name="question" required
+           placeholder="Ask in plain language, no keywords needed"
+           value="how did they make it run faster without making the model bigger">
+  </div>
+  <div class="field">
+    <label for="granularity">Granularity</label>
+    <select id="granularity">
+      <option value="1">1 sentence</option>
+      <option value="2" selected>2 sentences</option>
+      <option value="3">3 sentences</option>
+    </select>
+  </div>
+  <div class="field">
+    <label for="topn">Highlights</label>
+    <select id="topn">
+      <option value="1" selected>Top 1</option>
+      <option value="2">Top 2</option>
+      <option value="3">Top 3</option>
+    </select>
+  </div>
+  <button type="submit" id="go">Search</button>
+</form>
+
+<progress id="bar" hidden></progress>
+<div class="status" id="status">Ready. The whole page is ranked in one listwise call.</div>
+<div class="placeholder" id="placeholder">Results render here, inside the original page.</div>
+<iframe id="frame" hidden sandbox="allow-same-origin"></iframe>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const form = $('form'), bar = $('bar'), status = $('status');
+  const frame = $('frame'), placeholder = $('placeholder'), go = $('go');
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    go.disabled = true;
+    bar.hidden = false;
+    status.className = 'status';
+    status.textContent = 'Reading page and ranking passages...';
+
+    try {
+      const response = await fetch('/api/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: $('url').value.trim(),
+          question: $('question').value.trim(),
+          granularity: Number($('granularity').value),
+          top_n: Number($('topn').value),
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || response.statusText);
+
+      frame.srcdoc = data.html;
+      frame.hidden = false;
+      placeholder.hidden = true;
+      frame.addEventListener('load', () => {
+        // Jump to the best hit so the answer is on screen immediately.
+        const target = frame.contentDocument?.getElementById('jina-hit-0');
+        target?.scrollIntoView({ block: 'center' });
+      }, { once: true });
+
+      const topN = Number($('topn').value);
+      const legend = topN > 1
+        ? ' &nbsp; ' + Array.from({ length: topN }, (_, i) =>
+            `<span class="legend"><span class="chip r${i + 1}"></span>${i + 1}</span>`).join(' ')
+        : '';
+      status.innerHTML =
+        `${data.sentences} sentences, ${data.chunks} chunks, ` +
+        `<strong>${data.elapsed_ms} ms</strong> in a single request` + legend;
+    } catch (error) {
+      status.className = 'status error';
+      status.textContent = String(error.message || error);
+    } finally {
+      go.disabled = false;
+      bar.hidden = true;
+    }
+  });
+</script>
+</body>
+</html>

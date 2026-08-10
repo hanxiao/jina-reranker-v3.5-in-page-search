@@ -4,6 +4,7 @@ from .highlight import Span, apply_highlights, build_chunks, merge_spans
 from .reader import fetch_html
 from .search import DEFAULT_MODEL_REPO, Hit, InPageSearcher, SearchResult
 from .segment import Sentence, segment_html
+from .server import serve
 
 __version__ = "0.1.0"
 
@@ -19,4 +20,5 @@ __all__ = [
     "fetch_html",
     "merge_spans",
     "segment_html",
+    "serve",
 ]

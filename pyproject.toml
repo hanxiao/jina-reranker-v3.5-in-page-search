@@ -30,6 +30,7 @@ Paper = "https://arxiv.org/abs/2607.18152"
 
 [project.scripts]
 inpage = "inpage.cli:main"
+inpage-serve = "inpage.server:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -37,3 +38,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["inpage"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"inpage/static" = "inpage/static"

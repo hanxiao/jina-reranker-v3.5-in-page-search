@@ -103,8 +103,28 @@ hf download jinaai/jina-reranker-v3.5-mlx --local-dir ~/models/jina-reranker-v3.
 
 ## Use
 
+### Web UI
+
 ```bash
-export JINA_API_KEY=...   # optional, from https://jina.ai/api-dashboard/
+export JINA_API_KEY=...                # https://jina.ai/api-dashboard/
+inpage-serve --model-dir ~/models/jina-reranker-v3.5-mlx
+```
+
+Opens on <http://127.0.0.1:8000>. Type a URL and a question, pick granularity
+and how many hits to highlight, and the page comes back with the answer marked
+inside it.
+
+![Web UI](docs/img/web-ui.png)
+
+The backend is a stdlib `http.server` with a single JSON endpoint,
+`POST /api/search` -- no web framework. The model loads once on the first
+request and is reused, and the last page fetched is cached, so changing
+granularity or top-n re-ranks without re-fetching.
+
+### Command line
+
+```bash
+export JINA_API_KEY=...   # https://jina.ai/api-dashboard/
 
 inpage --url https://jina.ai/news/jina-reranker-v3-5-faster-listwise-reranking-hybrid-attention-self-distillation/ \
        -q "how did they make it run faster without making the model bigger" \
@@ -151,6 +171,8 @@ open("out.html", "w").write(result.html)
 | `--url` / `--file` | — | Fetch through Reader, or read a local file |
 | `--open` | off | Open the result in a browser |
 
+`inpage-serve` takes `--model-dir`, `--host`, `--port` and `--no-open`.
+
 Granularity is a real trade-off. At `1` the highlight is tight but an answer
 split across two sentences can be cut in half. At `3` you catch more context
 and spend more tokens. `2` is a reasonable default.
@@ -172,6 +194,11 @@ captions and table cells break it.
 gets glued to the sentence beside it and drags the chunk's score around. On the
 example page, excluding `pre`/`code` moved the top hit from a code-polluted
 chunk at 0.2745 to the actual answer sentence at 0.3079.
+
+**Reader refuses urllib's default User-Agent.** `Python-urllib/3.x` is turned
+away at the edge with a 403 before the request reaches the API, with or without
+a key, so `reader.py` sends its own agent string. Worth knowing if you write
+your own client and cannot see why curl succeeds where Python does not.
 
 ## Known limits
 
